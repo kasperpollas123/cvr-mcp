@@ -189,7 +189,7 @@ async function find_leads(args: Args): Promise<string> {
   const params: string[] = [`%${args.branche_contains}%`];
 
   if (args.kommunenavn) { conditions.push(`a.CVRAdresse_kommunenavn LIKE ?`); params.push(`%${args.kommunenavn}%`); }
-  if (args.kun_med_kontakt !== false) { conditions.push(`(t.vaerdi IS NOT NULL OR e.vaerdi IS NOT NULL)`); }
+  if (args.kun_med_kontakt !== false) { conditions.push(`(EXISTS(SELECT 1 FROM Telefonnummer WHERE CVREnhedsId = v.id) OR EXISTS(SELECT 1 FROM e_mailadresse WHERE CVREnhedsId = v.id))`); }
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   const beskJoin = hasEmp
