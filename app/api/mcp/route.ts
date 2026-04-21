@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { tursoQuery } from "@/lib/turso";
 
+export const runtime = "edge";
 export const maxDuration = 60;
 
 // ── Fast query builder helpers ────────────────────────────────────────────
@@ -217,6 +218,7 @@ async function find_leads(args: Args): Promise<string> {
     ${adrJoin}
     ${beskJoin}
     WHERE ${where.join(" AND ")}
+    GROUP BY v.CVRNummer
     ORDER BY CAST(besk.antal AS INTEGER) DESC
     LIMIT ?
   `, params) as unknown as LeadRow[];
@@ -253,6 +255,7 @@ async function find_companies(args: Args): Promise<string> {
     ${adrJoin}
     ${beskJoin}
     WHERE ${where.join(" AND ")}
+    GROUP BY v.CVRNummer
     LIMIT ?
   `, params) as unknown as LeadRow[];
 
