@@ -70,7 +70,7 @@ const TOOLS = [
 type Args = Record<string, unknown>;
 
 async function count_companies(args: Args): Promise<string> {
-  const conditions: string[] = ["v.status = 'NORMAL'"];
+  const conditions: string[] = ["v.status = 'aktiv'"];
   const params: string[] = [];
 
   if (args.branchekode) { conditions.push(`b.vaerdi = ?`); params.push(String(args.branchekode)); }
@@ -81,7 +81,7 @@ async function count_companies(args: Args): Promise<string> {
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   let beskJoin = "";
   if (hasEmp) {
-    beskJoin = `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
+    beskJoin = `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
     if (args.min_ansatte !== undefined) { conditions.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
     if (args.max_ansatte !== undefined) { conditions.push(`CAST(besk.antal AS INTEGER) <= ?`); params.push(String(args.max_ansatte)); }
   }
@@ -89,8 +89,8 @@ async function count_companies(args: Args): Promise<string> {
   const sql = `
     SELECT COUNT(DISTINCT v.CVRNummer) as antal
     FROM Virksomhed v
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
   `;
@@ -100,7 +100,7 @@ async function count_companies(args: Args): Promise<string> {
 
 async function find_companies(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 50), 200);
-  const conditions: string[] = ["v.status = 'NORMAL'"];
+  const conditions: string[] = ["v.status = 'aktiv'"];
   const params: string[] = [];
 
   if (args.branchekode) { conditions.push(`b.vaerdi = ?`); params.push(String(args.branchekode)); }
@@ -111,8 +111,8 @@ async function find_companies(args: Args): Promise<string> {
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   const beskJoin = hasEmp
-    ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`
-    : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
+    ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`
+    : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
 
   if (hasEmp) {
     if (args.min_ansatte !== undefined) { conditions.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
@@ -127,11 +127,11 @@ async function find_companies(args: Args): Promise<string> {
       a.CVRAdresse_kommunenavn AS kommune, t.vaerdi AS telefon, e.vaerdi AS email,
       besk.antal AS ansatte
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
     LIMIT ?
@@ -155,14 +155,14 @@ async function get_company(args: Args): Promise<string> {
       vf.vaerdiTekst AS virksomhedsform,
       besk.antal AS ansatte, besk.datoFra AS ansatte_dato, besk2.antal AS aarsvaerk
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
-    LEFT JOIN Virksomhedsform vf ON vf.CVREnhedsId = v.CVRNummer 
-    LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'
-    LEFT JOIN Beskaeftigelse_latest besk2 ON besk2.CVREnhedsId = v.CVRNummer AND besk2.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAarsvaerk'
+    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
+    LEFT JOIN Virksomhedsform vf ON vf.CVREnhedsId = v.id 
+    LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'
+    LEFT JOIN Beskaeftigelse_latest besk2 ON besk2.CVREnhedsId = v.id AND besk2.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAarsvaerk'
     WHERE v.CVRNummer = ? LIMIT 1
   `, [String(args.cvr_nummer)]);
 
@@ -183,7 +183,7 @@ async function get_company(args: Args): Promise<string> {
 
 async function find_leads(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 50), 200);
-  const conditions: string[] = ["v.status = 'NORMAL'", `b.vaerdiTekst LIKE ?`];
+  const conditions: string[] = ["v.status = 'aktiv'", `b.vaerdiTekst LIKE ?`];
   const params: string[] = [`%${args.branche_contains}%`];
 
   if (args.kommunenavn) { conditions.push(`a.CVRAdresse_kommunenavn LIKE ?`); params.push(`%${args.kommunenavn}%`); }
@@ -191,8 +191,8 @@ async function find_leads(args: Args): Promise<string> {
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   const beskJoin = hasEmp
-    ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`
-    : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
+    ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`
+    : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'`;
 
   if (hasEmp) {
     if (args.min_ansatte !== undefined) { conditions.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
@@ -207,11 +207,11 @@ async function find_leads(args: Args): Promise<string> {
       a.CVRAdresse_kommunenavn AS kommune, t.vaerdi AS telefon, e.vaerdi AS email,
       besk.antal AS ansatte
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
     ORDER BY CAST(besk.antal AS INTEGER) DESC
