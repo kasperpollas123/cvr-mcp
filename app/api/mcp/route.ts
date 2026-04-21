@@ -121,19 +121,22 @@ async function find_companies(args: Args): Promise<string> {
   params.push(String(limit));
 
   const rows = await tursoQuery(`
-    SELECT v.CVRNummer, n.vaerdi AS navn, b.vaerdiTekst AS branche, b.vaerdi AS branchekode,
+    SELECT
+      v.CVRNummer,
+      (SELECT vaerdi FROM Navn WHERE CVREnhedsId = v.id LIMIT 1) AS navn,
+      b.vaerdiTekst AS branche, b.vaerdi AS branchekode,
       a.CVRAdresse_vejnavn AS vej, a.CVRAdresse_husnummerFra AS husnr,
       a.CVRAdresse_postnummer AS postnr, a.CVRAdresse_postdistrikt AS by,
-      a.CVRAdresse_kommunenavn AS kommune, t.vaerdi AS telefon, e.vaerdi AS email,
+      a.CVRAdresse_kommunenavn AS kommune,
+      (SELECT vaerdi FROM Telefonnummer WHERE CVREnhedsId = v.id LIMIT 1) AS telefon,
+      (SELECT vaerdi FROM e_mailadresse WHERE CVREnhedsId = v.id LIMIT 1) AS email,
       besk.antal AS ansatte
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
     LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
     LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
+    GROUP BY v.CVRNummer
     LIMIT ?
   `, params);
 
@@ -148,19 +151,18 @@ async function find_companies(args: Args): Promise<string> {
 async function get_company(args: Args): Promise<string> {
   const rows = await tursoQuery(`
     SELECT v.CVRNummer, v.virksomhedStartdato, v.virksomhedOphoersdato, v.status,
-      n.vaerdi AS navn, b.vaerdiTekst AS branche, b.vaerdi AS branchekode,
+      (SELECT vaerdi FROM Navn WHERE CVREnhedsId = v.id LIMIT 1) AS navn,
+      b.vaerdiTekst AS branche, b.vaerdi AS branchekode,
       a.CVRAdresse_vejnavn AS vej, a.CVRAdresse_husnummerFra AS husnr,
       a.CVRAdresse_postnummer AS postnr, a.CVRAdresse_postdistrikt AS by,
-      a.CVRAdresse_kommunenavn AS kommune, t.vaerdi AS telefon, e.vaerdi AS email,
-      vf.vaerdiTekst AS virksomhedsform,
+      a.CVRAdresse_kommunenavn AS kommune,
+      (SELECT vaerdi FROM Telefonnummer WHERE CVREnhedsId = v.id LIMIT 1) AS telefon,
+      (SELECT vaerdi FROM e_mailadresse WHERE CVREnhedsId = v.id LIMIT 1) AS email,
+      (SELECT vaerdiTekst FROM Virksomhedsform WHERE CVREnhedsId = v.id LIMIT 1) AS virksomhedsform,
       besk.antal AS ansatte, besk.datoFra AS ansatte_dato, besk2.antal AS aarsvaerk
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
     LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
     LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
-    LEFT JOIN Virksomhedsform vf ON vf.CVREnhedsId = v.id 
     LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.id AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'
     LEFT JOIN Beskaeftigelse_latest besk2 ON besk2.CVREnhedsId = v.id AND besk2.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAarsvaerk'
     WHERE v.CVRNummer = ? LIMIT 1
@@ -201,19 +203,22 @@ async function find_leads(args: Args): Promise<string> {
   params.push(String(limit));
 
   const rows = await tursoQuery(`
-    SELECT v.CVRNummer, n.vaerdi AS navn, b.vaerdiTekst AS branche,
+    SELECT
+      v.CVRNummer,
+      (SELECT vaerdi FROM Navn WHERE CVREnhedsId = v.id LIMIT 1) AS navn,
+      b.vaerdiTekst AS branche,
       a.CVRAdresse_vejnavn AS vej, a.CVRAdresse_husnummerFra AS husnr,
       a.CVRAdresse_postnummer AS postnr, a.CVRAdresse_postdistrikt AS by,
-      a.CVRAdresse_kommunenavn AS kommune, t.vaerdi AS telefon, e.vaerdi AS email,
+      a.CVRAdresse_kommunenavn AS kommune,
+      (SELECT vaerdi FROM Telefonnummer WHERE CVREnhedsId = v.id LIMIT 1) AS telefon,
+      (SELECT vaerdi FROM e_mailadresse WHERE CVREnhedsId = v.id LIMIT 1) AS email,
       besk.antal AS ansatte
     FROM Virksomhed v
-    LEFT JOIN Navn n ON n.CVREnhedsId = v.id AND n.virkningTil IS NULL
     LEFT JOIN Branche b ON b.CVREnhedsId = v.id AND b.sekvens = '0'
     LEFT JOIN Adressering a ON a.CVREnhedsId = v.id AND a.AdresseringAnvendelse = 'POSTADRESSE'
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.id 
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.id 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
+    GROUP BY v.CVRNummer
     ORDER BY CAST(besk.antal AS INTEGER) DESC
     LIMIT ?
   `, params);
