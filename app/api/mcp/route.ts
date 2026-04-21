@@ -89,8 +89,8 @@ async function count_companies(args: Args): Promise<string> {
   const sql = `
     SELECT COUNT(DISTINCT v.CVRNummer) as antal
     FROM Virksomhed v
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '1' AND b.virkningTil IS NULL
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE' AND a.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
   `;
@@ -128,10 +128,10 @@ async function find_companies(args: Args): Promise<string> {
       besk.antal AS ansatte
     FROM Virksomhed v
     LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '1' AND b.virkningTil IS NULL
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE' AND a.virkningTil IS NULL
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer AND t.virkningTil IS NULL
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer AND e.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
     LIMIT ?
@@ -156,11 +156,11 @@ async function get_company(args: Args): Promise<string> {
       besk.antal AS ansatte, besk.datoFra AS ansatte_dato, besk2.antal AS aarsvaerk
     FROM Virksomhed v
     LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '1' AND b.virkningTil IS NULL
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE' AND a.virkningTil IS NULL
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer AND t.virkningTil IS NULL
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer AND e.virkningTil IS NULL
-    LEFT JOIN Virksomhedsform vf ON vf.CVREnhedsId = v.CVRNummer AND vf.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN Virksomhedsform vf ON vf.CVREnhedsId = v.CVRNummer 
     LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId = v.CVRNummer AND besk.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAnsatte'
     LEFT JOIN Beskaeftigelse_latest besk2 ON besk2.CVREnhedsId = v.CVRNummer AND besk2.beskaeftigelsestalstype = 'AarsbeskaeftigelseAntalAarsvaerk'
     WHERE v.CVRNummer = ? LIMIT 1
@@ -208,10 +208,10 @@ async function find_leads(args: Args): Promise<string> {
       besk.antal AS ansatte
     FROM Virksomhed v
     LEFT JOIN Navn n ON n.CVREnhedsId = v.CVRNummer AND n.virkningTil IS NULL
-    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '1' AND b.virkningTil IS NULL
-    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE' AND a.virkningTil IS NULL
-    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer AND t.virkningTil IS NULL
-    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer AND e.virkningTil IS NULL
+    LEFT JOIN Branche b ON b.CVREnhedsId = v.CVRNummer AND b.sekvens = '0'
+    LEFT JOIN Adressering a ON a.CVREnhedsId = v.CVRNummer AND a.AdresseringAnvendelse = 'POSTADRESSE'
+    LEFT JOIN Telefonnummer t ON t.CVREnhedsId = v.CVRNummer 
+    LEFT JOIN e_mailadresse e ON e.CVREnhedsId = v.CVRNummer 
     ${beskJoin}
     WHERE ${conditions.join(" AND ")}
     ORDER BY CAST(besk.antal AS INTEGER) DESC
