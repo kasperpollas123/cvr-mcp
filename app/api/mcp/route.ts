@@ -311,34 +311,6 @@ async function find_companies(args: Args): Promise<string> {
 }
 
 async function count_companies(args: Args): Promise<string> {
-  const where: string[] = [`b.sekvens='0'`, `v.status='aktiv'`];
-  const params: string[] = [];
-
-  if (args.branchekode) { where.push(`b.vaerdi = ?`); params.push(String(args.branchekode)); }
-  if (args.branche_contains) {
-    const codes = await getMatchingCodes(String(args.branche_contains));
-    if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}".`;
-    addCodeFilter(codes, where, params);
-  }
-
-  let adrJoin = ``;
-  if (args.kommunenavn) { adrJoin = `JOIN Adressering a ON a.CVREnhedsId=v.id AND a.AdresseringAnvendelse='POSTADRESSE'`; where.push(`a.CVRAdresse_kommunenavn LIKE ?`); params.push(`%${args.kommunenavn}%`); }
-  if (args.postnummer)  { adrJoin = adrJoin || `JOIN Adressering a ON a.CVREnhedsId=v.id AND a.AdresseringAnvendelse='POSTADRESSE'`; where.push(`a.CVRAdresse_postnummer = ?`); params.push(String(args.postnummer)); }
-
-  const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
-  const beskJoin = hasEmp ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId=v.id AND besk.beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte'` : ``;
-  if (args.min_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
-  if (args.max_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) <= ?`); params.push(String(args.max_ansatte)); }
-
-  const rows = await tursoQuery(`
-    SELECT COUNT(DISTINCT v.id) AS antal
-    FROM Branche b
-    JOIN Virksomhed v ON v.id=b.CVREnhedsId AND v.status='aktiv'
-    ${adrJoin} ${beskJoin}
-    WHERE ${where.join(" AND ")}
-  `, params);
-
-  const n = rows[0]?.antal ?? "0";
   const filters = [
     args.branche_contains ? `"${args.branche_contains}"` : null,
     args.branchekode ? `kode ${args.branchekode}` : null,
@@ -348,6 +320,60 @@ async function count_companies(args: Args): Promise<string> {
     args.max_ansatte !== undefined ? `≤${args.max_ansatte} ans.` : null,
   ].filter(Boolean).join(", ");
 
+  // Fast path: exact branchekode + no other filters
+  if (args.branchekode && !args.kommunenavn && !args.postnummer && args.min_ansatte === undefined && args.max_ansatte === undefined) {
+    const ids = await getCandidateIds([String(args.branchekode)], 10000);
+    const idPh = ids.map(() => "?").join(",");
+    const rows = await tursoQuery(`SELECT COUNT(*) AS antal FROM Virksomhed WHERE id IN (${idPh}) AND status='aktiv'`, ids);
+    const n = (rows[0] as Record<string, string | null>)?.antal ?? "0";
+    const suf = ids.length >= 10000 ? "+" : "";
+    return `**${n}${suf}** aktive virksomheder${filters ? ` — ${filters}` : ""}`;
+  }
+
+  // Branch contains: two-step (get IDs, count aktiv)
+  let codes: string[] = [];
+  if (args.branche_contains) {
+    codes = await getMatchingCodes(String(args.branche_contains));
+    if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}".`;
+  } else if (args.branchekode) {
+    codes = [String(args.branchekode)];
+  }
+
+  // Location/employment filters require a slower query — use find_companies count approach
+  const hasFilters = args.kommunenavn || args.postnummer || args.min_ansatte !== undefined || args.max_ansatte !== undefined;
+
+  if (!hasFilters && codes.length) {
+    // Pure branch count: fast two-step
+    const ID_CAP = 8000;
+    const ids = await getCandidateIds(codes, ID_CAP);
+    const idPh = ids.map(() => "?").join(",");
+    const rows = await tursoQuery(`SELECT COUNT(*) AS antal FROM Virksomhed WHERE id IN (${idPh}) AND status='aktiv'`, ids);
+    const n = (rows[0] as Record<string, string | null>)?.antal ?? "0";
+    const approxNote = ids.length >= ID_CAP ? "+ (stikprøve, faktisk antal kan være højere)" : "";
+    return `**${n}${approxNote}** aktive virksomheder${filters ? ` — ${filters}` : ""}`;
+  }
+
+  // With filters: use find_companies approach but just count
+  const where: string[] = [`v.status='aktiv'`];
+  const params: string[] = [];
+
+  if (codes.length) {
+    const ids = await getCandidateIds(codes, 2000);
+    if (!ids.length) return `0 aktive virksomheder — ${filters}`;
+    const idPh = ids.map(() => "?").join(",");
+    where.push(`v.id IN (${idPh})`);
+    params.push(...ids);
+  }
+  if (args.kommunenavn) { where.push(`${KOMMUNE} LIKE ?`); params.push(`%${args.kommunenavn}%`); }
+  if (args.postnummer)  { where.push(`${POSTNR} = ?`); params.push(String(args.postnummer)); }
+
+  const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
+  const beskJoin = hasEmp ? `JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId=v.id AND besk.beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte'` : ``;
+  if (args.min_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
+  if (args.max_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) <= ?`); params.push(String(args.max_ansatte)); }
+
+  const rows = await tursoQuery(`SELECT COUNT(*) AS antal FROM Virksomhed v ${beskJoin} WHERE ${where.join(" AND ")}`, params);
+  const n = (rows[0] as Record<string, string | null>)?.antal ?? "0";
   return `**${n}** aktive virksomheder${filters ? ` — ${filters}` : ""}`;
 }
 
@@ -389,23 +415,42 @@ async function get_company(args: Args): Promise<string> {
 
 async function search_by_name(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 20), 100);
-  const rows = await tursoQuery(`
-    SELECT v.CVRNummer, n.vaerdi AS navn,
-      ${KOMMUNE} AS kommune, ${POSTNR} AS postnr, ${BY} AS by,
-      b.vaerdiTekst AS branche, ${TLF} AS telefon,
-      besk.antal AS ansatte
-    FROM Navn n
-    JOIN Virksomhed v ON v.id=n.CVREnhedsId AND v.status='aktiv'
-    LEFT JOIN Branche b ON b.CVREnhedsId=v.id AND b.sekvens='0'
-    LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId=v.id AND besk.beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte'
-    WHERE n.vaerdi LIKE ?
-    GROUP BY v.CVRNummer
-    LIMIT ?
-  `, [`%${args.navn}%`, String(limit)]) as Record<string, string | null>[];
 
-  if (!rows.length) return `Ingen virksomheder fundet med navn der indeholder "${args.navn}"`;
+  // Step 1: find matching Naam rows (fast — LIMIT stops scan early when matches exist)
+  const naamRows = await tursoQuery(
+    `SELECT CVREnhedsId, vaerdi FROM Navn WHERE vaerdi LIKE ? LIMIT ?`,
+    [`%${args.navn}%`, String(limit * 3)]
+  ) as Record<string, string | null>[];
+
+  if (!naamRows.length) return `Ingen virksomheder fundet med navn der indeholder "${args.navn}"`;
+
+  // Deduplicate CVREnhedsIds (a company can have multiple name entries)
+  const seen = new Set<string>();
+  const nameMap = new Map<string, string>();
+  for (const r of naamRows) {
+    const id = r.CVREnhedsId;
+    if (id && !seen.has(id)) { seen.add(id); nameMap.set(id, r.vaerdi ?? ""); }
+  }
+  const ids = [...seen].slice(0, limit);
+  const idPh = ids.map(() => "?").join(",");
+
+  // Step 2: get company details for matched IDs
+  const rows = await tursoQuery(`
+    SELECT v.CVRNummer, v.id,
+      ${KOMMUNE} AS kommune, ${POSTNR} AS postnr, ${BY} AS by,
+      ${B_TEKST} AS branche, ${TLF} AS telefon,
+      (SELECT antal FROM Beskaeftigelse_latest WHERE CVREnhedsId=v.id AND beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte' LIMIT 1) AS ansatte
+    FROM Virksomhed v
+    WHERE v.id IN (${idPh}) AND v.status='aktiv'
+    LIMIT ?
+  `, [...ids, String(limit)]) as Record<string, string | null>[];
+
+  if (!rows.length) return `Ingen aktive virksomheder fundet med navn der indeholder "${args.navn}"`;
   return `Fandt ${rows.length} virksomheder:\n\n` +
-    rows.map(r => `**${r.navn}** (CVR: ${r.CVRNummer})\n  ${r.branche ?? "–"} | ${r.postnr ?? ""} ${r.by ?? r.kommune ?? "–"}\n  📞 ${r.telefon ?? "–"} | ${r.ansatte ?? "?"} ans.`).join("\n\n");
+    rows.map(r => {
+      const navn = nameMap.get(r.id ?? "") ?? "Ukendt";
+      return `**${navn}** (CVR: ${r.CVRNummer})\n  ${r.branche ?? "–"} | ${r.postnr ?? ""} ${r.by ?? r.kommune ?? "–"}\n  📞 ${r.telefon ?? "–"} | ${r.ansatte ?? "?"} ans.`;
+    }).join("\n\n");
 }
 
 async function list_branches(args: Args): Promise<string> {
