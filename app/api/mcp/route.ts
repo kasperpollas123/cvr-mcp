@@ -181,13 +181,6 @@ function formatCompany(r: LeadRow): string {
   return `**${r.navn ?? "Ukendt"}** (CVR: ${r.CVRNummer})\n  Branche: ${r.branche ?? "–"}${r.branchekode ? ` [${r.branchekode}]` : ""}\n  Adresse: ${adr || "–"}, ${r.kommune ?? "–"}\n  Kontakt: ${[r.telefon, r.email].filter(Boolean).join(" | ") || "–"}\n  Ansatte: ${r.ansatte ?? "ukendt"}`;
 }
 
-// Core SELECT columns (branche-first pattern)
-const SELECT_LEADS = `v.CVRNummer, ${N} AS navn, b.vaerdiTekst AS branche,
-      ${VEJ} AS vej, ${POSTNR} AS postnr, ${BY} AS by, ${KOMMUNE} AS kommune,
-      ${TLF} AS telefon, ${EML} AS email`;
-
-const SELECT_LEADS_BESK = `${SELECT_LEADS}, besk.antal AS ansatte`;
-
 // ── Branch code helpers ───────────────────────────────────────────────────
 
 // Fast code lookup: queries the 1702-row Branche_koder table instead of 2.4M Branche rows
@@ -206,24 +199,42 @@ function addCodeFilter(codes: string[], where: string[], params: string[]): void
   params.push(...codes);
 }
 
+// Two-step: get candidate CVREnhedsIds from Branche (indexed, fast, no DISTINCT needed)
+async function getCandidateIds(codes: string[], idLimit: number): Promise<string[]> {
+  const ph = codes.map(() => "?").join(",");
+  const rows = await tursoQuery(
+    `SELECT CVREnhedsId FROM Branche WHERE sekvens='0' AND vaerdi IN (${ph}) LIMIT ${idLimit}`,
+    codes
+  ) as Record<string, string>[];
+  // deduplicate in JS (faster than DISTINCT in SQL for this case)
+  return [...new Set(rows.map(r => r.CVREnhedsId).filter(Boolean))];
+}
+
+// Correlated subqueries for branche when starting from Virksomhed
+const B_TEKST = `(SELECT vaerdiTekst FROM Branche WHERE CVREnhedsId=v.id AND sekvens='0' LIMIT 1)`;
+const B_KODE  = `(SELECT vaerdi FROM Branche WHERE CVREnhedsId=v.id AND sekvens='0' LIMIT 1)`;
+
 // ── Tool implementations ──────────────────────────────────────────────────
 
 async function find_leads(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 50), 200);
-  const where: string[] = [`b.sekvens='0'`, `v.status='aktiv'`];
-  const params: string[] = [];
 
-  // Fast code lookup first (avoids LIKE scan on 2.4M Branche rows)
+  // Step 1: fast code lookup in Branche_koder (1702 rows)
   const codes = await getMatchingCodes(String(args.branche_contains));
   if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}" — prøv et andet søgeord.`;
-  addCodeFilter(codes, where, params);
+
+  // Step 2: get candidate IDs from Branche index (no full-table scan)
+  const ids = await getCandidateIds(codes, limit * 8);
+  if (!ids.length) return `Ingen virksomheder fundet i branche "${args.branche_contains}".`;
+  const idPh = ids.map(() => "?").join(",");
+
+  // Step 3: fetch details from Virksomhed WHERE id IN (...) — no GROUP BY needed
+  const where: string[] = [`v.status='aktiv'`, `v.id IN (${idPh})`];
+  const params: string[] = [...ids];
 
   if (args.kun_med_kontakt !== false) where.push(HAS_TLF);
-
-  // Location filters via JOIN to Adressering
-  let adrJoin = `LEFT JOIN Adressering a ON a.CVREnhedsId=v.id AND a.AdresseringAnvendelse='POSTADRESSE'`;
-  if (args.kommunenavn) { where.push(`a.CVRAdresse_kommunenavn LIKE ?`); params.push(`%${args.kommunenavn}%`); adrJoin = adrJoin.replace("LEFT JOIN", "JOIN"); }
-  if (args.postnummer)  { where.push(`a.CVRAdresse_postnummer = ?`); params.push(String(args.postnummer)); adrJoin = adrJoin.replace("LEFT JOIN", "JOIN"); }
+  if (args.kommunenavn) { where.push(`${KOMMUNE} LIKE ?`); params.push(`%${args.kommunenavn}%`); }
+  if (args.postnummer)  { where.push(`${POSTNR} = ?`); params.push(String(args.postnummer)); }
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   const beskJoin = hasEmp
@@ -231,40 +242,51 @@ async function find_leads(args: Args): Promise<string> {
     : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId=v.id AND besk.beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte'`;
   if (args.min_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
   if (args.max_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) <= ?`); params.push(String(args.max_ansatte)); }
-
   params.push(String(limit));
 
   const rows = await tursoQuery(`
-    SELECT ${SELECT_LEADS_BESK}
-    FROM Branche b
-    JOIN Virksomhed v ON v.id=b.CVREnhedsId AND v.status='aktiv'
-    ${adrJoin}
+    SELECT v.CVRNummer, ${N} AS navn, ${B_TEKST} AS branche,
+      ${VEJ} AS vej, ${POSTNR} AS postnr, ${BY} AS by, ${KOMMUNE} AS kommune,
+      ${TLF} AS telefon, ${EML} AS email, besk.antal AS ansatte
+    FROM Virksomhed v
     ${beskJoin}
     WHERE ${where.join(" AND ")}
-    GROUP BY v.CVRNummer
     ORDER BY CAST(besk.antal AS INTEGER) DESC
     LIMIT ?
   `, params) as unknown as LeadRow[];
 
-  if (!rows.length) return `Ingen leads fundet for "${args.branche_contains}"${args.kommunenavn ? ` i ${args.kommunenavn}` : ""}.\n\nNB: Adresse- og ansatte-data importeres stadig (kører i baggrunden) — prøv uden kommune/ansatte-filter.`;
+  if (!rows.length) return `Ingen leads fundet for "${args.branche_contains}"${args.kommunenavn ? ` i ${args.kommunenavn}` : ""}.\n\nNB: Adresse- og ansatte-data importeres stadig — prøv uden kommune/ansatte-filter, eller prøv et andet søgeord.`;
   return `**${rows.length} leads** (${args.branche_contains}${args.kommunenavn ? `, ${args.kommunenavn}` : ""}):\n\n` + rows.map(formatLead).join("\n\n");
 }
 
 async function find_companies(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 50), 200);
-  const where: string[] = [`b.sekvens='0'`, `v.status='aktiv'`];
-  const params: string[] = [];
 
-  if (args.branchekode) { where.push(`b.vaerdi = ?`); params.push(String(args.branchekode)); }
-  if (args.branche_contains) {
-    const codes = await getMatchingCodes(String(args.branche_contains));
-    if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}" — prøv et andet søgeord.`;
-    addCodeFilter(codes, where, params);
+  // Branch filtering: two-step (codes → IDs → details)
+  let ids: string[] | null = null;
+  if (args.branchekode || args.branche_contains) {
+    let codes: string[];
+    if (args.branchekode) {
+      codes = [String(args.branchekode)];
+    } else {
+      codes = await getMatchingCodes(String(args.branche_contains));
+      if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}" — prøv et andet søgeord.`;
+    }
+    ids = await getCandidateIds(codes, limit * 8);
+    if (!ids.length) return "Ingen virksomheder fundet med disse kriterier.";
   }
 
-  let adrJoin = `LEFT JOIN Adressering a ON a.CVREnhedsId=v.id AND a.AdresseringAnvendelse='POSTADRESSE'`;
-  if (args.kommunenavn) { where.push(`a.CVRAdresse_kommunenavn LIKE ?`); params.push(`%${args.kommunenavn}%`); adrJoin = adrJoin.replace("LEFT JOIN", "JOIN"); }
-  if (args.postnummer)  { where.push(`a.CVRAdresse_postnummer = ?`); params.push(String(args.postnummer)); adrJoin = adrJoin.replace("LEFT JOIN", "JOIN"); }
+  // Build main Virksomhed query (no GROUP BY — IDs already unique)
+  const where: string[] = [`v.status='aktiv'`];
+  const params: string[] = [];
+
+  if (ids) {
+    const idPh = ids.map(() => "?").join(",");
+    where.push(`v.id IN (${idPh})`);
+    params.push(...ids);
+  }
+  if (args.kommunenavn) { where.push(`${KOMMUNE} LIKE ?`); params.push(`%${args.kommunenavn}%`); }
+  if (args.postnummer)  { where.push(`${POSTNR} = ?`); params.push(String(args.postnummer)); }
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
   const beskJoin = hasEmp
@@ -272,17 +294,15 @@ async function find_companies(args: Args): Promise<string> {
     : `LEFT JOIN Beskaeftigelse_latest besk ON besk.CVREnhedsId=v.id AND besk.beskaeftigelsestalstype='AarsbeskaeftigelseAntalAnsatte'`;
   if (args.min_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) >= ?`); params.push(String(args.min_ansatte)); }
   if (args.max_ansatte !== undefined) { where.push(`CAST(besk.antal AS INTEGER) <= ?`); params.push(String(args.max_ansatte)); }
-
   params.push(String(limit));
 
   const rows = await tursoQuery(`
-    SELECT ${SELECT_LEADS_BESK}, b.vaerdi AS branchekode
-    FROM Branche b
-    JOIN Virksomhed v ON v.id=b.CVREnhedsId AND v.status='aktiv'
-    ${adrJoin}
+    SELECT v.CVRNummer, ${N} AS navn, ${B_TEKST} AS branche, ${B_KODE} AS branchekode,
+      ${VEJ} AS vej, ${POSTNR} AS postnr, ${BY} AS by, ${KOMMUNE} AS kommune,
+      ${TLF} AS telefon, ${EML} AS email, besk.antal AS ansatte
+    FROM Virksomhed v
     ${beskJoin}
     WHERE ${where.join(" AND ")}
-    GROUP BY v.CVRNummer
     LIMIT ?
   `, params) as unknown as LeadRow[];
 
@@ -542,10 +562,16 @@ async function find_by_postcode_range(args: Args): Promise<string> {
   ];
   const params: string[] = [String(args.postnummer_fra), String(args.postnummer_til)];
 
+  // Branch filter: two-step
+  let branchIds: string[] | null = null;
   if (args.branche_contains) {
     const codes = await getMatchingCodes(String(args.branche_contains));
     if (!codes.length) return `Ingen brancher fundet med "${args.branche_contains}".`;
-    addCodeFilter(codes, where, params);
+    branchIds = await getCandidateIds(codes, limit * 8);
+    if (!branchIds.length) return "Ingen virksomheder fundet med disse kriterier.";
+    const idPh = branchIds.map(() => "?").join(",");
+    where.push(`v.id IN (${idPh})`);
+    params.push(...branchIds);
   }
 
   const hasEmp = args.min_ansatte !== undefined || args.max_ansatte !== undefined;
@@ -557,9 +583,10 @@ async function find_by_postcode_range(args: Args): Promise<string> {
   params.push(String(limit));
 
   const rows = await tursoQuery(`
-    SELECT ${SELECT_LEADS_BESK}
-    FROM Branche b
-    JOIN Virksomhed v ON v.id=b.CVREnhedsId AND v.status='aktiv'
+    SELECT v.CVRNummer, ${N} AS navn, ${B_TEKST} AS branche,
+      ${VEJ} AS vej, ${POSTNR} AS postnr, ${BY} AS by, ${KOMMUNE} AS kommune,
+      ${TLF} AS telefon, ${EML} AS email, besk.antal AS ansatte
+    FROM Virksomhed v
     JOIN Adressering a ON a.CVREnhedsId=v.id AND a.AdresseringAnvendelse='POSTADRESSE'
     ${beskJoin}
     WHERE ${where.join(" AND ")}
