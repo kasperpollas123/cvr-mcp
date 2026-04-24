@@ -297,9 +297,7 @@ async function find_leads(args: Args): Promise<string> {
   const rows = await sbQuery("companies", {
     select: LEAD_SELECT,
     filters,
-    order: args.min_ansatte !== undefined || args.max_ansatte !== undefined
-      ? "antal_ansatte.desc.nullslast"
-      : "cvr.asc",
+    order: "antal_ansatte.desc.nullslast,navn.asc",
     limit,
   }) as Row[];
 
