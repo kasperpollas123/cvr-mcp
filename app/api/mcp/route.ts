@@ -181,7 +181,7 @@ Eksempel body:
   ]
 }
 
-Tabel: companies. Kolonner: cvr, navn, status, stiftelsesdato (YYYY-MM-DD), vejnavn, husnummer, postnummer, postdistrikt, kommunenavn, kommunekode, branchekode, branchetekst, virksomhedsform, telefon, email, antal_ansatte (null endnu), has_website BOOLEAN.`,
+Samme tabel og regler som sql_query. Hver query køres parallelt med 25s timeout. Brug altid WHERE status='aktiv' i hver query.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -204,23 +204,20 @@ Tabel: companies. Kolonner: cvr, navn, status, stiftelsesdato (YYYY-MM-DD), vejn
   },
   {
     name: "sql_query",
-    description: `Kør en custom SQL SELECT direkte på companies-tabellen. Brug til kompleks analytik som andre tools ikke dækker — window functions, CTEs, avanceret GROUP BY, korrelationsanalyser osv.
+    description: `Kør en custom SQL SELECT direkte på companies-tabellen. Brug til kompleks analytik som andre tools ikke dækker.
 
-Tabel: companies
-Kolonner:
-  cvr TEXT, navn TEXT, status TEXT ('aktiv'/'ophørt'),
-  stiftelsesdato TEXT (YYYY-MM-DD format),
-  vejnavn TEXT, husnummer TEXT, postnummer TEXT, postdistrikt TEXT,
-  kommunenavn TEXT, kommunekode TEXT,
-  branchekode TEXT, branchetekst TEXT, virksomhedsform TEXT,
-  telefon TEXT, email TEXT,
-  antal_ansatte INTEGER (null indtil Phase 2 import),
-  has_website BOOLEAN
+TABEL: companies
+KOLONNER: cvr TEXT, navn TEXT, status TEXT ('aktiv'/'ophørt'), stiftelsesdato TEXT (YYYY-MM-DD), vejnavn TEXT, husnummer TEXT, postnummer TEXT, postdistrikt TEXT, kommunenavn TEXT, kommunekode TEXT, branchekode TEXT, branchetekst TEXT, virksomhedsform TEXT, telefon TEXT, email TEXT, antal_ansatte INTEGER (null endnu), has_website BOOLEAN
 
-Eksempler:
-  SELECT branchetekst, COUNT(*) FROM companies WHERE status='aktiv' GROUP BY branchetekst ORDER BY count DESC LIMIT 20
-  WITH ranked AS (SELECT kommunenavn, branchetekst, COUNT(*) as n, RANK() OVER (PARTITION BY branchetekst ORDER BY COUNT(*) DESC) as r FROM companies WHERE status='aktiv' GROUP BY kommunenavn, branchetekst) SELECT * FROM ranked WHERE r <= 3
-  SELECT EXTRACT(YEAR FROM stiftelsesdato::date) as aar, COUNT(*) FROM companies WHERE status='aktiv' AND stiftelsesdato IS NOT NULL GROUP BY aar ORDER BY aar`,
+HURTIGE MØNSTRE (brug altid WHERE status='aktiv' først):
+  GROUP BY branchetekst → SELECT branchetekst, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY branchetekst ORDER BY n DESC LIMIT 100
+  GROUP BY branchekode, branchetekst → SELECT branchekode, branchetekst, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY branchekode, branchetekst ORDER BY n DESC LIMIT 100
+  GROUP BY kommunenavn → SELECT kommunenavn, COUNT(*) as n FROM companies WHERE status='aktiv' AND kommunenavn IS NOT NULL GROUP BY kommunenavn ORDER BY n DESC LIMIT 50
+  GROUP BY virksomhedsform → SELECT virksomhedsform, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY virksomhedsform ORDER BY n DESC
+  Stiftelsesår → SELECT EXTRACT(YEAR FROM stiftelsesdato::date)::int as aar, COUNT(*) as n FROM companies WHERE status='aktiv' AND stiftelsesdato IS NOT NULL GROUP BY aar ORDER BY aar
+  Window function → WITH r AS (SELECT kommunenavn, branchetekst, COUNT(*) as n, RANK() OVER (PARTITION BY branchetekst ORDER BY COUNT(*) DESC) as rk FROM companies WHERE status='aktiv' GROUP BY kommunenavn, branchetekst) SELECT * FROM r WHERE rk=1 ORDER BY n DESC LIMIT 20
+
+REGLER: Kun SELECT/WITH tilladt. Max 1000 rækker output. Timeout 25s.`,
     inputSchema: {
       type: "object",
       properties: {
