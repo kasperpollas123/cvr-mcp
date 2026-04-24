@@ -169,6 +169,40 @@ const TOOLS = [
     },
   },
   {
+    name: "sql_query_multi",
+    description: `Kør flere SQL SELECT queries på én gang — returnerer alle resultater i ét kald. Brug dette til dashboards og statistik der kræver data fra flere vinkler. Undgår tool-use limits.
+
+Eksempel body:
+{
+  "queries": [
+    {"label": "Top brancher", "query": "SELECT branchetekst, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY branchetekst ORDER BY n DESC LIMIT 15"},
+    {"label": "Top kommuner", "query": "SELECT kommunenavn, COUNT(*) as n FROM companies WHERE status='aktiv' AND kommunenavn IS NOT NULL GROUP BY kommunenavn ORDER BY n DESC LIMIT 15"},
+    {"label": "Stiftelser per år", "query": "SELECT EXTRACT(YEAR FROM stiftelsesdato::date)::int as aar, COUNT(*) as n FROM companies WHERE status='aktiv' AND stiftelsesdato IS NOT NULL AND stiftelsesdato >= '2000-01-01' GROUP BY aar ORDER BY aar"}
+  ]
+}
+
+Tabel: companies. Kolonner: cvr, navn, status, stiftelsesdato (YYYY-MM-DD), vejnavn, husnummer, postnummer, postdistrikt, kommunenavn, kommunekode, branchekode, branchetekst, virksomhedsform, telefon, email, antal_ansatte (null endnu), has_website BOOLEAN.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        queries: {
+          type: "array",
+          description: "Liste af queries der køres parallelt",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Navn på denne datadel, f.eks. 'Top brancher'" },
+              query: { type: "string", description: "SQL SELECT query" },
+            },
+            required: ["label", "query"],
+          },
+        },
+        row_limit: { type: "number", description: "Max rækker per query (default 200)", default: 200 },
+      },
+      required: ["queries"],
+    },
+  },
+  {
     name: "sql_query",
     description: `Kør en custom SQL SELECT direkte på companies-tabellen. Brug til kompleks analytik som andre tools ikke dækker — window functions, CTEs, avanceret GROUP BY, korrelationsanalyser osv.
 
@@ -451,6 +485,41 @@ async function find_by_postcode_range(args: Args): Promise<string> {
     rows.map(formatLead).join("\n\n");
 }
 
+async function sql_query_multi(args: Args): Promise<string> {
+  const queries = args.queries as Array<{ label: string; query: string }>;
+  const limit = Math.min(Number(args.row_limit ?? 200), 500);
+
+  if (!queries?.length) return "Mangler queries array.";
+
+  // Run all queries in parallel
+  const results = await Promise.all(
+    queries.map(async ({ label, query }) => {
+      try {
+        const rows = await sbRpc("run_query", { query, row_limit: limit }) as Row[];
+        return { label, rows, error: null };
+      } catch (e) {
+        return { label, rows: [], error: String(e) };
+      }
+    })
+  );
+
+  return results.map(({ label, rows, error }) => {
+    if (error) return `**${label}:**\n⚠️ Fejl: ${error}`;
+    if (!rows.length) return `**${label}:** (ingen data)`;
+
+    const cols = Object.keys(rows[0]);
+    const colWidths = cols.map(c =>
+      Math.min(Math.max(c.length, ...rows.map(r => String(r[c] ?? "").length)), 35)
+    );
+    const header  = cols.map((c, i) => c.padEnd(colWidths[i])).join("  ");
+    const divider = colWidths.map(w => "─".repeat(w)).join("  ");
+    const lines   = rows.map(r =>
+      cols.map((c, i) => String(r[c] ?? "").slice(0, 35).padEnd(colWidths[i])).join("  ")
+    );
+    return `**${label}** (${rows.length} rækker):\n\`\`\`\n${header}\n${divider}\n${lines.join("\n")}\n\`\`\``;
+  }).join("\n\n");
+}
+
 async function sql_query(args: Args): Promise<string> {
   if (!args.query) return "Mangler query parameter.";
   const limit = Math.min(Number(args.row_limit ?? 500), 1000);
@@ -507,7 +576,7 @@ export async function POST(req: NextRequest) {
         find_leads, find_companies, count_companies, get_company,
         search_by_name, list_branches, market_by_municipality,
         employee_distribution, market_overview, find_by_postcode_range,
-        sql_query,
+        sql_query, sql_query_multi,
       };
       const fn = handlers[name];
       if (!fn) return jsonrpc_error(id, -32601, `Unknown tool: ${name}`);
