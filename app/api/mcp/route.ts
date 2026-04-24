@@ -15,6 +15,12 @@ interface QueryOptions {
   limit?: number;
 }
 
+const SB_HEADERS = {
+  Authorization: `Bearer ${SB_KEY}`,
+  apikey: SB_KEY,
+  Accept: "application/json",
+} as Record<string, string>;
+
 async function sbQuery(table: string, opts: QueryOptions): Promise<Record<string, unknown>[]> {
   const params = new URLSearchParams();
   if (opts.select) params.set("select", opts.select);
@@ -22,24 +28,20 @@ async function sbQuery(table: string, opts: QueryOptions): Promise<Record<string
   if (opts.limit)  params.set("limit", String(opts.limit));
 
   const url = `${SB_URL}/rest/v1/${table}?${params}`;
+  const filterUrl = opts.filters?.length ? `${url}&${opts.filters.join("&")}` : url;
 
-  // Filters are added as individual headers/params — append to URL
-  const filterUrl = opts.filters?.length
-    ? `${url}&${opts.filters.join("&")}`
-    : url;
+  const res = await fetch(filterUrl, { headers: SB_HEADERS });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+  return res.json();
+}
 
-  const res = await fetch(filterUrl, {
-    headers: {
-      Authorization: `Bearer ${SB_KEY}`,
-      apikey: SB_KEY,
-      Accept: "application/json",
-    },
+async function sbRpc(fn: string, body: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { ...SB_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Supabase ${res.status}: ${body}`);
-  }
+  if (!res.ok) throw new Error(`Supabase RPC ${fn} ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
@@ -61,6 +63,7 @@ const TOOLS = [
         min_ansatte:      { type: "number", description: "Minimum antal ansatte" },
         max_ansatte:      { type: "number", description: "Maksimum antal ansatte" },
         kun_med_kontakt:  { type: "boolean", description: "Kun firmaer med telefonnummer (default: true)", default: true },
+        har_hjemmeside:   { type: "boolean", description: "Kun firmaer der sandsynligvis har egen hjemmeside (email på eget domæne, ikke gmail/hotmail osv.)" },
         limit:            { type: "number", description: "Max resultater (default 50, max 200)", default: 50 },
       },
       required: ["branche_contains"],
@@ -78,6 +81,7 @@ const TOOLS = [
         postnummer:       { type: "string", description: "Postnummer" },
         min_ansatte:      { type: "number", description: "Min ansatte" },
         max_ansatte:      { type: "number", description: "Max ansatte" },
+        har_hjemmeside:   { type: "boolean", description: "Kun firmaer der sandsynligvis har egen hjemmeside" },
         limit:            { type: "number", description: "Max resultater (default 50, max 200)", default: 50 },
       },
     },
@@ -185,7 +189,7 @@ const TOOLS = [
 // ── Shared query builder ──────────────────────────────────────────────────────
 type Args = Record<string, unknown>;
 
-function buildFilters(args: Args & { branche_contains?: string; branchekode?: string; kommunenavn?: string; postnummer?: string; min_ansatte?: number; max_ansatte?: number; kun_med_kontakt?: boolean }): string[] {
+function buildFilters(args: Args & { branche_contains?: string; branchekode?: string; kommunenavn?: string; postnummer?: string; min_ansatte?: number; max_ansatte?: number; kun_med_kontakt?: boolean; har_hjemmeside?: boolean }): string[] {
   const f: string[] = ["status=eq.aktiv"];
 
   if (args.branche_contains)
@@ -202,6 +206,8 @@ function buildFilters(args: Args & { branche_contains?: string; branchekode?: st
     f.push(`antal_ansatte=lte.${args.max_ansatte}`);
   if (args.kun_med_kontakt !== false)
     f.push("telefon=not.is.null");
+  if (args.har_hjemmeside === true)
+    f.push("has_website=eq.true");
 
   return f;
 }
@@ -328,145 +334,69 @@ async function search_by_name(args: Args): Promise<string> {
 
 async function list_branches(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 30), 100);
-
-  // Get distinct branch codes matching the search term
-  const rows = await sbQuery("companies", {
-    select: "branchekode,branchetekst",
-    filters: [`branchetekst=ilike.*${args.contains}*`, "status=eq.aktiv", "branchekode=not.is.null"],
-    limit: limit * 20, // over-fetch to deduplicate
+  const rows = await sbRpc("list_branches_agg", {
+    search_term: String(args.contains),
+    max_results: limit,
   }) as Row[];
 
-  // Deduplicate + count by branchekode
-  const codeMap = new Map<string, { tekst: string; count: number }>();
-  for (const r of rows) {
-    const kode = r.branchekode as string;
-    if (!kode) continue;
-    const entry = codeMap.get(kode);
-    if (entry) entry.count++;
-    else codeMap.set(kode, { tekst: (r.branchetekst as string) ?? kode, count: 1 });
-  }
-
-  if (!codeMap.size) return `Ingen brancher fundet med "${args.contains}"`;
-
-  // Sort by count desc
-  const sorted = [...codeMap.entries()]
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, limit);
-
+  if (!rows.length) return `Ingen brancher fundet med "${args.contains}"`;
   return `Brancher der matcher "${args.contains}":\n\n` +
-    sorted.map(([kode, { tekst, count }]) => `**${tekst}** [${kode}] — ~${count} virksomheder`).join("\n");
+    rows.map(r => `**${r.branchetekst}** [${r.branchekode}] — ${r.antal} virksomheder`).join("\n");
 }
 
 async function market_by_municipality(args: Args): Promise<string> {
   const limit = Math.min(Number(args.limit ?? 20), 50);
-  const filters = buildFilters({ ...(args as Parameters<typeof buildFilters>[0]), kun_med_kontakt: false });
-  const noNull = [...filters, "kommunenavn=not.is.null"];
-
-  const rows = await sbQuery("companies", {
-    select: "kommunenavn",
-    filters: noNull,
-    limit: 10000, // get enough to group by municipality
+  const rows = await sbRpc("market_by_municipality_agg", {
+    search_term: args.branche_contains ?? null,
+    kode:        args.branchekode ?? null,
+    min_emp:     args.min_ansatte ?? null,
+    max_results: limit,
   }) as Row[];
 
   if (!rows.length) return "Ingen virksomheder fundet med disse filtre.";
-
-  // Count by municipality
-  const counts = new Map<string, number>();
-  for (const r of rows) {
-    const k = r.kommunenavn as string;
-    if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
-  }
-
-  const sorted = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit);
-
-  const total = rows.length;
+  const total = rows.reduce((s, r) => s + Number(r.antal ?? 0), 0);
   const label = args.branche_contains ?? args.branchekode ?? "alle";
-  return `**"${label}" per kommune** (top ${sorted.length}, total vist: ${total}):\n\n` +
-    sorted.map(([k, n]) => `${k}: **${n}**`).join("\n");
+  return `**"${label}" per kommune** (top ${rows.length}, total vist: ${total}):\n\n` +
+    rows.map(r => `${r.kommunenavn}: **${r.antal}**`).join("\n");
 }
 
 async function employee_distribution(args: Args): Promise<string> {
-  const filters = buildFilters({ ...(args as Parameters<typeof buildFilters>[0]), kun_med_kontakt: false });
-  const withEmp = [...filters, "antal_ansatte=not.is.null"];
-
-  const rows = await sbQuery("companies", {
-    select: "antal_ansatte",
-    filters: withEmp,
-    limit: 50000,
+  const rows = await sbRpc("employee_distribution_agg", {
+    search_term: args.branche_contains ?? null,
+    kode:        args.branchekode ?? null,
+    kommune:     args.kommunenavn ?? null,
   }) as Row[];
 
   if (!rows.length) return "Ingen ansatte-data endnu — kør Phase 2 import for at hente beskæftigelsesdata.";
 
-  // Bucket into size ranges
-  const buckets: Record<string, number> = {
-    "0": 0, "1–4": 0, "5–9": 0, "10–19": 0, "20–49": 0, "50–99": 0, "100–249": 0, "250+": 0,
-  };
-  const order = ["0", "1–4", "5–9", "10–19", "20–49", "50–99", "100–249", "250+"];
-
-  for (const r of rows) {
-    const n = Number(r.antal_ansatte);
-    if (n === 0)       buckets["0"]++;
-    else if (n <= 4)   buckets["1–4"]++;
-    else if (n <= 9)   buckets["5–9"]++;
-    else if (n <= 19)  buckets["10–19"]++;
-    else if (n <= 49)  buckets["20–49"]++;
-    else if (n <= 99)  buckets["50–99"]++;
-    else if (n <= 249) buckets["100–249"]++;
-    else               buckets["250+"]++;
-  }
-
-  const total = rows.length;
+  const total = rows.reduce((s, r) => s + Number(r.antal ?? 0), 0);
   const label = args.branche_contains ?? args.branchekode ?? "alle";
   return `**Størrelsesfordeling: "${label}"** (${args.kommunenavn ?? "hele Danmark"}, ${total} virksomheder med data):\n\n` +
-    order.map(b => {
-      const n = buckets[b];
+    rows.map(r => {
+      const n = Number(r.antal);
       const pct = Math.round(n / total * 20);
-      return `${b.padEnd(7)}  ${"█".repeat(pct)}${"░".repeat(20 - pct)}  ${n} (${Math.round(n / total * 100)}%)`;
+      return `${String(r.stoerrelse).padEnd(7)}  ${"█".repeat(pct)}${"░".repeat(20 - pct)}  ${n} (${Math.round(n / total * 100)}%)`;
     }).join("\n");
 }
 
 async function market_overview(args: Args): Promise<string> {
-  const contains = String(args.branche_contains);
+  const data = await sbRpc("market_overview_agg", {
+    search_term: String(args.branche_contains),
+  }) as { total: number; top_kommuner: Row[]; top_brancher: Row[] };
 
-  // Run count + sample in parallel
-  const [countRes, sampleRows] = await Promise.all([
-    fetch(`${SB_URL}/rest/v1/companies?select=cvr&status=eq.aktiv&branchetekst=ilike.*${contains}*&limit=1`, {
-      headers: { Authorization: `Bearer ${SB_KEY}`, apikey: SB_KEY, Prefer: "count=exact" },
-    }),
-    sbQuery("companies", {
-      select: "kommunenavn,branchetekst,branchekode",
-      filters: ["status=eq.aktiv", `branchetekst=ilike.*${contains}*`, "kommunenavn=not.is.null"],
-      limit: 5000,
-    }) as Promise<Row[]>,
-  ]);
-
-  const total = countRes.headers.get("content-range")?.split("/")[1] ?? "?";
-
-  // Top municipalities
-  const komuneCounts = new Map<string, number>();
-  const brancheCounts = new Map<string, number>();
-  for (const r of sampleRows) {
-    const k = r.kommunenavn as string;
-    if (k) komuneCounts.set(k, (komuneCounts.get(k) ?? 0) + 1);
-    const b = r.branchetekst as string;
-    if (b) brancheCounts.set(b, (brancheCounts.get(b) ?? 0) + 1);
-  }
-
-  const topKommuner = [...komuneCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  const topBrancher = [...brancheCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const topKommuner = data.top_kommuner ?? [];
+  const topBrancher = data.top_brancher ?? [];
 
   return [
-    `## Markedsoverblik: "${contains}"`,
+    `## Markedsoverblik: "${args.branche_contains}"`,
     ``,
-    `**Aktive virksomheder:** ${total}`,
+    `**Aktive virksomheder:** ${data.total}`,
     ``,
     `**Top kommuner:**`,
-    topKommuner.length ? topKommuner.map(([k, n]) => `  ${k}: ${n}`).join("\n") : "  (ingen data)",
+    topKommuner.length ? topKommuner.map(r => `  ${r.kommunenavn}: ${r.antal}`).join("\n") : "  (ingen data)",
     ``,
     `**Underkategorier:**`,
-    topBrancher.length ? topBrancher.map(([b, n]) => `  ${b}: ${n}`).join("\n") : "  (ingen data)",
+    topBrancher.length ? topBrancher.map(r => `  ${r.branchetekst}: ${r.antal}`).join("\n") : "  (ingen data)",
   ].join("\n");
 }
 
