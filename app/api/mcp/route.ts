@@ -46,8 +46,8 @@ async function sbRpc(fn: string, body: Record<string, unknown>): Promise<unknown
 }
 
 // ── Core fields to select for list views ─────────────────────────────────────
-const LEAD_SELECT = "cvr,navn,branchekode,branchetekst,vejnavn,husnummer,postnummer,postdistrikt,kommunenavn,telefon,email,antal_ansatte";
-const COMPANY_SELECT = "cvr,navn,status,stiftelsesdato,branchekode,branchetekst,virksomhedsform,vejnavn,husnummer,postnummer,postdistrikt,kommunenavn,kommunekode,telefon,email,antal_ansatte";
+const LEAD_SELECT = "cvr,navn,branchekode,branchetekst,vejnavn,husnummer,postnummer,postdistrikt,kommunenavn,telefon,email,website,antal_ansatte";
+const COMPANY_SELECT = "cvr,navn,status,stiftelsesdato,branchekode,branchetekst,virksomhedsform,vejnavn,husnummer,postnummer,postdistrikt,kommunenavn,kommunekode,telefon,email,website,antal_ansatte";
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 const TOOLS = [
@@ -58,7 +58,7 @@ const TOOLS = [
       type: "object",
       properties: {
         branche_contains: { type: "string", description: "Branche søgeord, f.eks. 'VVS', 'tømrer', 'maler', 'elektro', 'gulv', 'tag', 'kloak'" },
-        kommunenavn:      { type: "string", description: "Kommune/by, f.eks. 'Aarhus', 'Odense', 'Aalborg', 'København'" },
+        kommunenavn:      { type: "string", description: "Kommunenavn (titel-case, delvist match OK), fx 'Aarhus', 'Odense', 'Aalborg', 'København', 'Randers'" },
         postnummer:       { type: "string", description: "Eksakt postnummer, f.eks. '8000'" },
         min_ansatte:      { type: "number", description: "Minimum antal ansatte" },
         max_ansatte:      { type: "number", description: "Maksimum antal ansatte" },
@@ -77,7 +77,7 @@ const TOOLS = [
       properties: {
         branchekode:      { type: "string", description: "Eksakt DB07 branchekode, f.eks. '432200'" },
         branche_contains: { type: "string", description: "Søg i branchetekst, f.eks. 'tømrer'" },
-        kommunenavn:      { type: "string", description: "Kommunenavn" },
+        kommunenavn:      { type: "string", description: "Kommunenavn (delvist match OK), fx 'Aarhus', 'København', 'Odense'" },
         postnummer:       { type: "string", description: "Postnummer" },
         min_ansatte:      { type: "number", description: "Min ansatte" },
         max_ansatte:      { type: "number", description: "Max ansatte" },
@@ -94,7 +94,7 @@ const TOOLS = [
       properties: {
         branche_contains: { type: "string", description: "Søg i branchetekst" },
         branchekode:      { type: "string", description: "Eksakt branchekode" },
-        kommunenavn:      { type: "string", description: "Kommunenavn" },
+        kommunenavn:      { type: "string", description: "Kommunenavn (delvist match OK), fx 'Aarhus', 'København'" },
         postnummer:       { type: "string", description: "Postnummer" },
         min_ansatte:      { type: "number", description: "Min ansatte" },
         max_ansatte:      { type: "number", description: "Max ansatte" },
@@ -155,7 +155,7 @@ const TOOLS = [
       properties: {
         branche_contains: { type: "string", description: "Branche søgeord" },
         branchekode:      { type: "string", description: "Eksakt branchekode" },
-        kommunenavn:      { type: "string", description: "Begræns til kommune" },
+        kommunenavn:      { type: "string", description: "Begræns til kommune, fx 'Aarhus', 'København'" },
       },
     },
   },
@@ -207,14 +207,16 @@ Samme tabel og regler som sql_query. Hver query køres parallelt med 25s timeout
     description: `Kør en custom SQL SELECT direkte på companies-tabellen. Brug til kompleks analytik som andre tools ikke dækker.
 
 TABEL: companies
-KOLONNER: cvr TEXT, navn TEXT, status TEXT ('aktiv'/'ophørt'), stiftelsesdato TEXT (YYYY-MM-DD), vejnavn TEXT, husnummer TEXT, postnummer TEXT, postdistrikt TEXT, kommunenavn TEXT, kommunekode TEXT, branchekode TEXT, branchetekst TEXT, virksomhedsform TEXT, telefon TEXT, email TEXT, antal_ansatte INTEGER (null endnu), has_website BOOLEAN
+KOLONNER: cvr TEXT, navn TEXT, status TEXT ('aktiv'/'ophørt'), stiftelsesdato TEXT (YYYY-MM-DD), vejnavn TEXT, husnummer TEXT, postnummer TEXT, postdistrikt TEXT, kommunenavn TEXT (titel-case, fx 'København', 'Aarhus', 'Odense', 'Aalborg', 'Randers'), kommunekode TEXT, branchekode TEXT (6-cifret DB07, fx '432200'=VVS, '412000'=byggeri, '477900'=detailhandel), branchetekst TEXT, virksomhedsform TEXT, telefon TEXT, email TEXT, website TEXT (domæne fra email, fx 'novonordisk.com' — NULL for gmail/hotmail osv.), antal_ansatte INTEGER (antal ansatte, null hvis ukendt), has_website BOOLEAN
 
 HURTIGE MØNSTRE (brug altid WHERE status='aktiv' først):
   GROUP BY branchetekst → SELECT branchetekst, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY branchetekst ORDER BY n DESC LIMIT 100
   GROUP BY branchekode, branchetekst → SELECT branchekode, branchetekst, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY branchekode, branchetekst ORDER BY n DESC LIMIT 100
   GROUP BY kommunenavn → SELECT kommunenavn, COUNT(*) as n FROM companies WHERE status='aktiv' AND kommunenavn IS NOT NULL GROUP BY kommunenavn ORDER BY n DESC LIMIT 50
+  Søg i kommunenavn → WHERE status='aktiv' AND kommunenavn ILIKE '%aarhus%'  (case-insensitiv)
   GROUP BY virksomhedsform → SELECT virksomhedsform, COUNT(*) as n FROM companies WHERE status='aktiv' GROUP BY virksomhedsform ORDER BY n DESC
   Stiftelsesår → SELECT EXTRACT(YEAR FROM stiftelsesdato::date)::int as aar, COUNT(*) as n FROM companies WHERE status='aktiv' AND stiftelsesdato IS NOT NULL GROUP BY aar ORDER BY aar
+  Med ansatte → WHERE status='aktiv' AND antal_ansatte >= 5 ORDER BY antal_ansatte DESC
   Window function → WITH r AS (SELECT kommunenavn, branchetekst, COUNT(*) as n, RANK() OVER (PARTITION BY branchetekst ORDER BY COUNT(*) DESC) as rk FROM companies WHERE status='aktiv' GROUP BY kommunenavn, branchetekst) SELECT * FROM r WHERE rk=1 ORDER BY n DESC LIMIT 20
 
 REGLER: Kun SELECT/WITH tilladt. Max 1000 rækker output. Timeout 25s.`,
@@ -372,7 +374,7 @@ async function get_company(args: Args): Promise<string> {
     ``,
     `📞 ${r.telefon ?? "–"}  |  ✉️ ${r.email ?? "–"}`,
     ``,
-    `Ansatte: ${r.antal_ansatte ?? "ukendt (Phase 2 data)"}`,
+    `Ansatte: ${r.antal_ansatte ?? "ukendt"}`,
   ].join("\n");
 }
 
@@ -426,7 +428,7 @@ async function employee_distribution(args: Args): Promise<string> {
     kommune:     args.kommunenavn ?? null,
   }) as Row[];
 
-  if (!rows.length) return "Ingen ansatte-data endnu — kør Phase 2 import for at hente beskæftigelsesdata.";
+  if (!rows.length) return "Ingen ansatte-data for disse kriterier. Prøv en bredere branchesøgning.";
 
   const total = rows.reduce((s, r) => s + Number(r.antal ?? 0), 0);
   const label = args.branche_contains ?? args.branchekode ?? "alle";
