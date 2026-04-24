@@ -200,6 +200,34 @@ const TOOLS = [
     },
   },
   {
+    name: "sql_query",
+    description: `Kør en custom SQL SELECT direkte på companies-tabellen. Brug til kompleks analytik som andre tools ikke dækker — window functions, CTEs, avanceret GROUP BY, korrelationsanalyser osv.
+
+Tabel: companies
+Kolonner:
+  cvr TEXT, navn TEXT, status TEXT ('aktiv'/'ophørt'),
+  stiftelsesdato TEXT (YYYY-MM-DD format),
+  vejnavn TEXT, husnummer TEXT, postnummer TEXT, postdistrikt TEXT,
+  kommunenavn TEXT, kommunekode TEXT,
+  branchekode TEXT, branchetekst TEXT, virksomhedsform TEXT,
+  telefon TEXT, email TEXT,
+  antal_ansatte INTEGER (null indtil Phase 2 import),
+  has_website BOOLEAN
+
+Eksempler:
+  SELECT branchetekst, COUNT(*) FROM companies WHERE status='aktiv' GROUP BY branchetekst ORDER BY count DESC LIMIT 20
+  WITH ranked AS (SELECT kommunenavn, branchetekst, COUNT(*) as n, RANK() OVER (PARTITION BY branchetekst ORDER BY COUNT(*) DESC) as r FROM companies WHERE status='aktiv' GROUP BY kommunenavn, branchetekst) SELECT * FROM ranked WHERE r <= 3
+  SELECT EXTRACT(YEAR FROM stiftelsesdato::date) as aar, COUNT(*) FROM companies WHERE status='aktiv' AND stiftelsesdato IS NOT NULL GROUP BY aar ORDER BY aar`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query:     { type: "string", description: "SQL SELECT eller WITH (CTE) query" },
+        row_limit: { type: "number", description: "Max antal rækker (default 500, max 1000)", default: 500 },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "find_by_postcode_range",
     description: "Find virksomheder i et geografisk postnummerinterval.",
     inputSchema: {
@@ -454,6 +482,30 @@ async function find_by_postcode_range(args: Args): Promise<string> {
     rows.map(formatLead).join("\n\n");
 }
 
+async function sql_query(args: Args): Promise<string> {
+  if (!args.query) return "Mangler query parameter.";
+  const limit = Math.min(Number(args.row_limit ?? 500), 1000);
+
+  const rows = await sbRpc("run_query", {
+    query:     String(args.query),
+    row_limit: limit,
+  }) as Row[] | null;
+
+  if (!rows || !rows.length) return "Ingen resultater.";
+
+  // Format as a readable table
+  const cols = Object.keys(rows[0]);
+  const colWidths = cols.map(c => Math.min(Math.max(c.length, ...rows.map(r => String(r[c] ?? "").length)), 40));
+
+  const header = cols.map((c, i) => c.padEnd(colWidths[i])).join("  ");
+  const divider = colWidths.map(w => "─".repeat(w)).join("  ");
+  const rowLines = rows.map(r =>
+    cols.map((c, i) => String(r[c] ?? "").slice(0, 40).padEnd(colWidths[i])).join("  ")
+  );
+
+  return `**${rows.length} rækker** (limit ${limit}):\n\n\`\`\`\n${header}\n${divider}\n${rowLines.join("\n")}\n\`\`\``;
+}
+
 async function database_stats(_args: Args): Promise<string> {
   const data = await sbRpc("database_stats", {}) as {
     total_active: number; total_all: number;
@@ -546,7 +598,7 @@ export async function POST(req: NextRequest) {
         find_leads, find_companies, count_companies, get_company,
         search_by_name, list_branches, market_by_municipality,
         employee_distribution, market_overview, find_by_postcode_range,
-        database_stats, top_branches, new_companies,
+        database_stats, top_branches, new_companies, sql_query,
       };
       const fn = handlers[name];
       if (!fn) return jsonrpc_error(id, -32601, `Unknown tool: ${name}`);
