@@ -169,6 +169,37 @@ const TOOLS = [
     },
   },
   {
+    name: "database_stats",
+    description: "Hent komplet databaseoverblik i ét kald — total virksomhedsantal, top 25 brancher med antal, top 25 kommuner, selskabsformer og stiftelsesår fordeling. Brug dette til statistik og visualiseringer over hele CVR.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "top_branches",
+    description: "Hent alle brancher med antal aktive virksomheder — komplet liste til grafer og sammenligninger. Ét kald returnerer op til 100 brancher.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        min_count:   { type: "number", description: "Mindste antal virksomheder per branche (default 50)", default: 50 },
+        max_results: { type: "number", description: "Max antal brancher (default 100)", default: 100 },
+      },
+    },
+  },
+  {
+    name: "new_companies",
+    description: "Find nyest oprettede virksomheder i en periode — sorteret efter stiftelsesdato, nyeste først. Kan filtreres på branche, kommune og dato.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from_date:   { type: "string", description: "Fra dato, f.eks. '2026-01-01'" },
+        to_date:     { type: "string", description: "Til dato, f.eks. '2026-04-24'" },
+        branche:     { type: "string", description: "Branche søgeord, f.eks. 'elektro', 'VVS'" },
+        kode:        { type: "string", description: "Eksakt branchekode" },
+        kommune:     { type: "string", description: "Kommunenavn" },
+        max_results: { type: "number", description: "Max resultater (default 50)", default: 50 },
+      },
+    },
+  },
+  {
     name: "find_by_postcode_range",
     description: "Find virksomheder i et geografisk postnummerinterval.",
     inputSchema: {
@@ -423,6 +454,66 @@ async function find_by_postcode_range(args: Args): Promise<string> {
     rows.map(formatLead).join("\n\n");
 }
 
+async function database_stats(_args: Args): Promise<string> {
+  const data = await sbRpc("database_stats", {}) as {
+    total_active: number; total_all: number;
+    with_phone: number; with_email: number; with_website: number;
+    top_branches: Row[]; top_municipalities: Row[];
+    by_company_form: Row[]; founded_by_year: Row[];
+  };
+
+  const pct = (n: number) => `${Math.round(n / data.total_active * 100)}%`;
+
+  return [
+    `## CVR Database — komplet overblik`,
+    ``,
+    `**Virksomheder:** ${data.total_active.toLocaleString("da")} aktive (${data.total_all.toLocaleString("da")} total)`,
+    `**Kontaktdata:** ${data.with_phone.toLocaleString("da")} med tlf (${pct(data.with_phone)}) · ${data.with_email.toLocaleString("da")} med email (${pct(data.with_email)}) · ${data.with_website.toLocaleString("da")} med hjemmeside (${pct(data.with_website)})`,
+    ``,
+    `**Top 25 brancher:**`,
+    data.top_branches.map(r => `  ${r.branchetekst} [${r.branchekode}]: ${Number(r.antal).toLocaleString("da")}`).join("\n"),
+    ``,
+    `**Top 25 kommuner:**`,
+    data.top_municipalities.map(r => `  ${r.kommunenavn}: ${Number(r.antal).toLocaleString("da")}`).join("\n"),
+    ``,
+    `**Selskabsformer:**`,
+    data.by_company_form.map(r => `  ${r.virksomhedsform}: ${Number(r.antal).toLocaleString("da")}`).join("\n"),
+    ``,
+    `**Stiftede per år (siden 1980):**`,
+    data.founded_by_year.map(r => `  ${r.aar}: ${Number(r.antal).toLocaleString("da")}`).join("\n"),
+  ].join("\n");
+}
+
+async function top_branches(args: Args): Promise<string> {
+  const rows = await sbRpc("top_branches", {
+    min_count:   args.min_count   ?? 50,
+    max_results: args.max_results ?? 100,
+  }) as Row[];
+
+  if (!rows.length) return "Ingen brancher fundet.";
+  const total = rows.reduce((s, r) => s + Number(r.antal), 0);
+  return `**${rows.length} brancher** (min ${args.min_count ?? 50} virksomheder, total vist: ${total.toLocaleString("da")}):\n\n` +
+    rows.map((r, i) => `${i + 1}. **${r.branchetekst}** [${r.branchekode}] — ${Number(r.antal).toLocaleString("da")}`).join("\n");
+}
+
+async function new_companies(args: Args): Promise<string> {
+  const rows = await sbRpc("new_companies", {
+    from_date:   args.from_date   ?? null,
+    to_date:     args.to_date     ?? null,
+    branche:     args.branche     ?? null,
+    kode:        args.kode        ?? null,
+    kommune:     args.kommune     ?? null,
+    max_results: args.max_results ?? 50,
+  }) as Row[];
+
+  if (!rows.length) return "Ingen virksomheder fundet i den periode.";
+  return `**${rows.length} nyest oprettede virksomheder**${args.branche ? ` (${args.branche})` : ""}${args.kommune ? ` i ${args.kommune}` : ""}:\n\n` +
+    rows.map((r, i) => {
+      const adr = [r.vejnavn && `${r.vejnavn} ${r.husnummer ?? ""}`.trim(), r.postnummer, r.postdistrikt].filter(Boolean).join(" ");
+      return `${i + 1}. **${r.navn}** (CVR: ${r.cvr})\n   📅 Stiftet: ${r.stiftelsesdato} | 🏭 ${r.branchetekst ?? "–"}\n   📍 ${adr || r.kommunenavn || "–"} | 📞 ${r.telefon ?? "–"} | ✉️ ${r.email ?? "–"}`;
+    }).join("\n\n");
+}
+
 // ── JSON-RPC router ───────────────────────────────────────────────────────────
 function jsonrpc(id: unknown, result: unknown) {
   return NextResponse.json({ jsonrpc: "2.0", id, result });
@@ -455,6 +546,7 @@ export async function POST(req: NextRequest) {
         find_leads, find_companies, count_companies, get_company,
         search_by_name, list_branches, market_by_municipality,
         employee_distribution, market_overview, find_by_postcode_range,
+        database_stats, top_branches, new_companies,
       };
       const fn = handlers[name];
       if (!fn) return jsonrpc_error(id, -32601, `Unknown tool: ${name}`);
